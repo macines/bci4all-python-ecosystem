@@ -1,3 +1,27 @@
+"""
+Nome do ficheiro: multichannel_udp_metric_bar_receiver.py
+
+Descrição:
+    Receiver do sistema de feedback EEG multicanal.
+    Escuta mensagens UDP com o valor agregado do RMS alfa dos canais
+    6, 7 e 8 e apresenta esse valor numa interface gráfica com barra
+    vertical de feedback.
+
+Funcionalidades:
+    - escuta UDP em 127.0.0.1:5005
+    - recebe mensagens JSON
+    - extrai o campo 'value'
+    - atualiza valor numérico e barra vertical em tempo real
+
+Dependências:
+    - PySide6
+    - socket
+    - json
+    - sys
+
+Execução:
+    python multichannel_udp_metric_bar_receiver.py
+"""
 # ==========================================
 # IMPORTS
 # ==========================================

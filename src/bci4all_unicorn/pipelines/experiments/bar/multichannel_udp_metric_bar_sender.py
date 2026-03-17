@@ -1,3 +1,25 @@
+"""
+Nome do ficheiro: multichannel_udp_metric_bar_sender.py
+
+Descrição:
+    Sender do sistema de feedback EEG multicanal com Unicorn BCI Core-8.
+    Adquire os canais 6, 7 e 8, processa cada canal individualmente,
+    extrai a banda alfa (8–12 Hz), calcula o RMS por canal, combina os
+    três valores RMS e envia o valor agregado por UDP em formato JSON.
+
+Fluxo:
+    BCICore8 -> seleção de canal -> limpeza -> banda alfa -> RMS
+    -> combinação dos 3 RMS -> soma e suavização -> envio UDP
+
+Dependências:
+    - gpype
+    - numpy
+    - socket
+    - json
+
+Execução:
+    python multichannel_udp_metric_bar_sender.py
+"""
 # ==========================================
 # IMPORTS
 # ==========================================

@@ -123,7 +123,7 @@ def build_channel_branch(pipeline, source, channel, fs):
     # CLEAN
     # -----------------------------
     clean_bp = gp.Bandpass(f_lo=1, f_hi=30)
-    notch = gp.Bandstop(f_lo=48, f_hi=52)
+    notch = gp.Bandstop(f_lo=48, f_hi=5, order=4)
 
     clean_scope = gp.TimeSeriesScope(
         name=f"Clean CH{channel} (1-30 Hz)",

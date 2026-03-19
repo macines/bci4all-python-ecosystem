@@ -30,7 +30,7 @@ class P300SingleCellGrid(Widget):
 
         self.on_stimulus = None
 
-        # ✅ IMPORTANTE: usar o layout do gpype (self._layout)
+        # IMPORTANTE: usar o layout do gpype (self._layout)
         self.grid = QGridLayout()
         self.grid.setSpacing(8)
         self._layout.addLayout(self.grid)

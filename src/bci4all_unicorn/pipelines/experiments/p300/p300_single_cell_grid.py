@@ -206,15 +206,15 @@ def main():
 
     # Criação da grid
     grid = P300SingleCellGrid( 
-        labels=labels,
-        rows=2,
-        cols=3,
-        flash_ms=300,
-        isi_ms=300,
-        title="P300 Single-Cell",
-        target_idx=2,
-        show_target_hint=True,
-    )
+        labels=labels,          # Lista de símbolos/textos que vão aparecer na grelha (ex: ["SIM", "NÃO", ...])
+        rows=2,                 # Número de linhas da grelha (aqui: 2 linhas)    
+        cols=3,                 # Número de colunas da grelha (aqui: 3 colunas → total = 2x3 = 6 células)
+        flash_ms=300,           # Tempo (em milissegundos) que cada célula fica "acesa" (flash)
+        isi_ms=300,             # Intervalo entre flashes (Inter-Stimulus Interval), também em milissegundos
+        title="P300 Single-Cell",  # Título da interface/janela apresentada ao utilizador
+        target_idx=2,           # Índice do alvo (target) na lista labels (ex: 2 → terceiro elemento, "SIM")
+        show_target_hint=True,  # Se True, mostra ao utilizador qual é o alvo a focar (útil em treino)
+   )
 
     # Função callback para logging
     def stimulus_logger(idx, timestamp, is_target, label):

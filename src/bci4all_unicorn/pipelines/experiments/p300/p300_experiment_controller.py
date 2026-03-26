@@ -324,6 +324,8 @@ def main():
         udp_port=12345,
         send_udp=True,
         save_csv=True,
+
+        # Ficheiro de Sinal
         csv_path="p300_experiment_log.csv",
     )
 

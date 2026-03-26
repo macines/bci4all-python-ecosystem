@@ -31,6 +31,7 @@ TRIGGER_NONTARGET = 2
 UDP_PORT = 12345
 
 USE_GENERATOR = True   # mudar para False quando quiseres usar o Unicorn
+# Ficheiro de Eventos
 CSV_FILE = "p300_pipeline_output.csv"
 
 # Janelas para ERP / epoching

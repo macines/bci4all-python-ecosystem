@@ -95,10 +95,10 @@ def main():
     bandpass = gp.Bandpass(f_lo=1, f_hi=30)
 
     # Filtro notch 50 Hz (Europa)
-    notch50 = gp.Bandstop(f_lo=48, f_hi=52)
+    notch50 = gp.Bandstop(f_lo=48, f_hi=52, order=4)
 
     # Filtro notch 60 Hz (EUA)
-    notch60 = gp.Bandstop(f_lo=58, f_hi=62)
+    # notch60 = gp.Bandstop(f_lo=58, f_hi=62, order=4)
 
 
     # -----------------------------

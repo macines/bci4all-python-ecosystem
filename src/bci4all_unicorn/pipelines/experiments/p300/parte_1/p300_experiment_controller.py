@@ -1,4 +1,6 @@
 """
+CAMADA 2
+
 Nome do ficheiro:
     p300_experiment_controller.py
 
@@ -244,6 +246,7 @@ def main():
         "STOP", "AJUDA", "TOSSE"
     ]
 
+    # Criação da Grid e os seus parametros
     controller = P300ExperimentController(
         labels=labels,
         rows=2,

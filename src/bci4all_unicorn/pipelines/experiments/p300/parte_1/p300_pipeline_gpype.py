@@ -1,4 +1,6 @@
 """
+CAMADA 3
+
 Nome do ficheiro:
     p300_pipeline_gpype.py
 
@@ -38,7 +40,7 @@ TRIGGER_NONTARGET = 2
 
 UDP_PORT = 12345
 
-USE_GENERATOR = True   # mudar para False quando quiseres usar o Unicorn
+USE_GENERATOR = True  
 CSV_FILE = "p300_pipeline_output.csv"
 
 # Janelas para ERP / epoching

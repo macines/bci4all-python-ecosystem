@@ -8,13 +8,21 @@ Descrição:
     - adquirir EEG
     - filtrar sinal
     - receber triggers UDP vindos da camada 2
+    - segmentar épocas target / non-target
+    - visualizar ERP inicial em TriggerScope
     - gravar dados em CSV
-    - visualizar apenas os 8 canais EEG no TimeSeriesScope
+
+Fluxo:
+    EEG source -> bandpass -> notch50 -> notch60 -> scope / trigger nodes
+                                           ^
+                                           |
+                                     UDPReceiver
 
 Notas:
-    - Nesta versão, o TimeSeriesScope e o CSV mostram só os 8 canais EEG.
-    - Os triggers continuam a poder ser recebidos por UDP, mas não aparecem
-      como canais extra no scope nem no ficheiro CSV.
+    - Esta versão é inicial e serve para validar a integração.
+    - Usa triggers:
+        1 = target
+        2 = non-target
 """
 
 import gpype as gp
@@ -31,7 +39,6 @@ TRIGGER_NONTARGET = 2
 UDP_PORT = 12345
 
 USE_GENERATOR = True   # mudar para False quando quiseres usar o Unicorn
-# Ficheiro de Eventos
 CSV_FILE = "p300_pipeline_output.csv"
 
 # Janelas para ERP / epoching
@@ -73,6 +80,11 @@ def main():
     trig_receiver = gp.UDPReceiver(port=UDP_PORT)
 
     # -----------------------------
+    # CAPTURA DE TECLADO (opcional)
+    # -----------------------------
+    key_capture = gp.Keyboard()
+
+    # -----------------------------
     # NÓS DE EPOCHING
     # -----------------------------
     trig_node_target = gp.Trigger(
@@ -88,11 +100,48 @@ def main():
     )
 
     # -----------------------------
+    # ROUTERS PARA SCOPE E GRAVAÇÃO
+    # -----------------------------
+    router_scope = gp.Router(
+        input_channels=[gp.Router.ALL, gp.Router.ALL, gp.Router.ALL]
+    )
+
+    router_raw = gp.Router(
+        input_channels=[gp.Router.ALL, gp.Router.ALL, gp.Router.ALL]
+    )
+
+    # -----------------------------
+    # MARCADORES VISUAIS NO SCOPE
+    # -----------------------------
+    mk = gp.TimeSeriesScope.Markers
+    markers = [
+        mk(
+            color="#ff0000",
+            label="Target",
+            channel=CHANNEL_COUNT,
+            value=TRIGGER_TARGET,
+        ),
+        mk(
+            color="#00aa00",
+            label="Nontarget",
+            channel=CHANNEL_COUNT,
+            value=TRIGGER_NONTARGET,
+        ),
+        mk(
+            color="#0000ff",
+            label="Keyboard",
+            channel=CHANNEL_COUNT + 1,
+            value=77,
+        ),
+    ]
+
+    # -----------------------------
     # WIDGETS DE VISUALIZAÇÃO
     # -----------------------------
     scope = gp.TimeSeriesScope(
         amplitude_limit=50,
         time_window=10,
+        markers=markers,
     )
 
     trig_scope = gp.TriggerScope(
@@ -112,14 +161,21 @@ def main():
     pipeline.connect(bandpass, notch50)
     pipeline.connect(notch50, notch60)
 
-    # Scope só com EEG filtrado
-    pipeline.connect(notch60, scope)
+    # Scope com EEG + triggers + keyboard
+    pipeline.connect(notch60, router_scope["in1"])
+    pipeline.connect(trig_receiver, router_scope["in2"])
+    pipeline.connect(key_capture, router_scope["in3"])
 
-    # Writer só com EEG bruto
-    pipeline.connect(amp, writer)
+    # Raw writer com EEG + triggers + keyboard
+    pipeline.connect(amp, router_raw["in1"])
+    pipeline.connect(trig_receiver, router_raw["in2"])
+    pipeline.connect(key_capture, router_raw["in3"])
+
+    pipeline.connect(router_scope, scope)
+    pipeline.connect(router_raw, writer)
 
     # Trigger nodes
-    # Descomenta estas linhas depois de corrigires o trigger.py
+    #
     # pipeline.connect(notch60, trig_node_target[gp.Constants.Defaults.PORT_IN])
     # pipeline.connect(trig_receiver, trig_node_target[gp.Trigger.PORT_TRIGGER])
 

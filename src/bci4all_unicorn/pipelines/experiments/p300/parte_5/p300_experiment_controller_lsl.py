@@ -722,16 +722,25 @@ class P300ExperimentController:
         is_target:  True se esta célula é o target do trial atual.
         label_text: texto da célula (ex: "Sim"), apenas informativo.
 
-        Converte para code (1-based) e trigger (0/1) e atualiza o stream LSL.
+        Codificação dos canais LSL:
+        - Ch09 (code):    70 se é target, índice 1-based da célula se é distractor.
+        - Ch10 (trigger): índice 1-based da célula se é target, 0 se é distractor.
+
+        Desta forma, no CSV:
+        - Ch09 == 70 identifica inequivocamente um evento target.
+        - Ch10 != 0 indica qual a célula target nesse instante.
+        - Cruzando Ch09==70 com Ch10, sabe-se exatamente qual célula foi o target.
         """
-        # code: índice 1-based da célula (ex: idx=8 -> code=9 para "Stop").
-        code = idx + 1
+        # code: 70 se é target (valor fora do range 1..9, fácil de identificar);
+        #       índice 1-based da célula se é distractor (ex: idx=8 -> code=9).
+        code = 70 if is_target else idx + 1
 
-        # trigger: 1 se é o target (utilizador deve focar-se aqui),
-        #          0 se é um distractor (não é o target deste trial).
-        trigger = 1 if is_target else 0
+        # trigger: índice 1-based da célula se é target (ex: idx=4 -> trigger=5),
+        #          permitindo identificar qual célula foi o target;
+        #          0 se é distractor (sem informação relevante).
+        trigger = idx + 1 if is_target else 0
 
-        # Atualiza o stream P300_Events com os valores do estímulo ativo.
+        # Atualiza o stream P300_Events com a nova codificação.
         self.event_sender.set_event(code, trigger)
 
     def _on_stimulus_end(self):

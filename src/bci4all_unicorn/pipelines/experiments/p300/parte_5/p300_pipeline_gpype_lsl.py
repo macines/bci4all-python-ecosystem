@@ -90,7 +90,7 @@ DEFAULT_CSV_FILE = "p300_full_output_lsl.csv"
 
 # Se True, usa gerador sintético de sinal.
 # Se False, usa o dispositivo real BCICore8.
-USE_GENERATOR = False
+USE_GENERATOR = True
 
 
 def resolve_output_file():
@@ -404,9 +404,10 @@ class CsvWriterWithTimestamp(IONode):
             # Tempo relativo ao início da gravação (segundos desde START_CSV)
             time_s = lsl_ts - self.lsl_t0
 
-            # Timestamp absoluto: lsl_epoch + lsl_ts
+            # Timestamp absoluto em Unix epoch (segundos desde 1970-01-01 00:00:00 UTC)
+            # com precisão de microssegundos, derivado do relógio LSL.
             ts_abs = self.lsl_epoch + timedelta(seconds=lsl_ts)
-            ts_str = ts_abs.strftime("%Y-%m-%d %H:%M:%S.%f")
+            ts_str = f"{ts_abs.timestamp():.6f}"
 
             self.time_values.append(f"{time_s:.6f}")
             self.timestamp_values.append(ts_str)

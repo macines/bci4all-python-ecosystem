@@ -18,23 +18,34 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QProgressBar,
     QDoubleSpinBox,
+    QSpinBox,
     QHBoxLayout,
     QFrame,
     QCheckBox,
 )
 
 
-def _play_beep_thread(frequency=520, duration=0.6, sample_rate=44100):
+def _play_beep_thread(frequency=220, duration=2.5, sample_rate=44100):
     try:
         import sounddevice as sd
+
         t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-        envelope = np.ones_like(t)
-        fade = int(sample_rate * 0.05)
-        envelope[:fade] = np.linspace(0, 1, fade)
-        envelope[-fade:] = np.linspace(1, 0, fade)
-        wave = (np.sin(2 * np.pi * frequency * t) * 0.5 * envelope).astype(np.float32)
+
+        # Decaimento exponencial — ressoa como um sino tibetano
+        envelope = np.exp(-3 * t / duration)
+
+        # Harmónicos sobrepostos para timbre rico e natural
+        wave = (
+            np.sin(2 * np.pi * frequency * t) * 0.50 +
+            np.sin(2 * np.pi * frequency * 2.76 * t) * 0.15 +
+            np.sin(2 * np.pi * frequency * 5.40 * t) * 0.05
+        ) * envelope
+
+        wave = (wave / np.max(np.abs(wave)) * 0.6).astype(np.float32)
+
         sd.play(wave, samplerate=sample_rate)
         sd.wait()
+
     except ImportError:
         import platform
         if platform.system() == "Windows":
@@ -54,7 +65,7 @@ def _play_beep_thread(frequency=520, duration=0.6, sample_rate=44100):
                 print("\a", end="", flush=True)
 
 
-def play_beep_async(frequency=520, duration=0.6):
+def play_beep_async(frequency=220, duration=2.5):
     t = threading.Thread(target=_play_beep_thread, args=(frequency, duration), daemon=True)
     t.start()
 
@@ -108,7 +119,7 @@ class LSLBarApp(QWidget):
         super().__init__()
 
         self.setWindowTitle("BCI Alpha Feedback - LSL")
-        self.resize(420, 700)
+        self.resize(420, 780)
 
         self.vmin = 0.0
         self.vmax = 10.0
@@ -116,8 +127,10 @@ class LSLBarApp(QWidget):
 
         self.sound_threshold = 1.5
         self.sound_enabled = False
+        self.bowl_frequency = 220       # frequência do sino tibetano (Hz)
+        self.bowl_duration = 2.5        # duração do sino (s)
         self._last_beep_time = 0.0
-        self._below_threshold = False
+        self._above_threshold = False
 
         self.setStyleSheet("""
             QWidget {
@@ -161,7 +174,7 @@ class LSLBarApp(QWidget):
                 color: #627D98;
             }
 
-            QDoubleSpinBox {
+            QDoubleSpinBox, QSpinBox {
                 background-color: #FFFFFF;
                 border: 1px solid #BCCCDC;
                 border-radius: 8px;
@@ -171,7 +184,7 @@ class LSLBarApp(QWidget):
                 color: #1F2933;
             }
 
-            QDoubleSpinBox:focus { border: 1px solid #00AEEF; }
+            QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #00AEEF; }
 
             QLabel#MetricLabel {
                 font-size: 11px;
@@ -229,6 +242,13 @@ class LSLBarApp(QWidget):
                 padding: 5px 14px;
                 color: transparent;
                 background-color: transparent;
+            }
+
+            QLabel#SectionDivider {
+                font-size: 10px;
+                font-weight: 700;
+                color: #BCCCDC;
+                letter-spacing: 3px;
             }
         """)
 
@@ -292,6 +312,56 @@ class LSLBarApp(QWidget):
         sound_row.addWidget(self.sound_checkbox)
         sound_row.addStretch()
 
+        # --- Divisor sino ---
+        bowl_divider = QLabel("● SINO TIBETANO")
+        bowl_divider.setObjectName("SectionDivider")
+        bowl_divider.setAlignment(Qt.AlignCenter)
+
+        # --- Frequência do sino ---
+        self.freq_label = QLabel("Frequência (Hz)")
+        self.freq_label.setObjectName("RowLabel")
+
+        self.freq_spin = QSpinBox()
+        self.freq_spin.setRange(60, 1200)
+        self.freq_spin.setSingleStep(10)
+        self.freq_spin.setValue(self.bowl_frequency)
+        self.freq_spin.setToolTip(
+            "Frequências típicas de sinos tibetanos:\n"
+            "  60–110 Hz  — graves, muito profundos\n"
+            " 110–220 Hz  — baixos, terra\n"
+            " 220–440 Hz  — médios, equilíbrio (recomendado)\n"
+            " 440–880 Hz  — agudos, clareza\n"
+            " 880–1200 Hz — muito agudos"
+        )
+        self.freq_spin.valueChanged.connect(self.on_freq_changed)
+
+        freq_row = QHBoxLayout()
+        freq_row.setContentsMargins(0, 0, 0, 0)
+        freq_row.setSpacing(12)
+        freq_row.addStretch()
+        freq_row.addWidget(self.freq_label)
+        freq_row.addWidget(self.freq_spin)
+        freq_row.addStretch()
+
+        # --- Duração do sino ---
+        self.dur_label = QLabel("Duração (s)")
+        self.dur_label.setObjectName("RowLabel")
+
+        self.dur_spin = QDoubleSpinBox()
+        self.dur_spin.setRange(0.5, 6.0)
+        self.dur_spin.setSingleStep(0.5)
+        self.dur_spin.setDecimals(1)
+        self.dur_spin.setValue(self.bowl_duration)
+        self.dur_spin.valueChanged.connect(self.on_dur_changed)
+
+        dur_row = QHBoxLayout()
+        dur_row.setContentsMargins(0, 0, 0, 0)
+        dur_row.setSpacing(12)
+        dur_row.addStretch()
+        dur_row.addWidget(self.dur_label)
+        dur_row.addWidget(self.dur_spin)
+        dur_row.addStretch()
+
         # --- Relax badge ---
         self.relax_badge = QLabel("✓ RELAXADO")
         self.relax_badge.setObjectName("RelaxBadgeHidden")
@@ -340,6 +410,11 @@ class LSLBarApp(QWidget):
         card_layout.addLayout(scale_row)
         card_layout.addLayout(threshold_row)
         card_layout.addLayout(sound_row)
+        card_layout.addSpacing(4)
+        card_layout.addWidget(bowl_divider)
+        card_layout.addLayout(freq_row)
+        card_layout.addLayout(dur_row)
+        card_layout.addSpacing(4)
         card_layout.addWidget(self.relax_badge)
         card_layout.addSpacing(4)
         card_layout.addWidget(self.metric_label)
@@ -366,12 +441,18 @@ class LSLBarApp(QWidget):
 
     def on_threshold_changed(self, val):
         self.sound_threshold = float(val)
-        self._below_threshold = False
+        self._above_threshold = False
 
     def on_sound_toggle(self, state):
         self.sound_enabled = bool(state)
         if not self.sound_enabled:
-            self._below_threshold = False
+            self._above_threshold = False
+
+    def on_freq_changed(self, val):
+        self.bowl_frequency = int(val)
+
+    def on_dur_changed(self, val):
+        self.bowl_duration = float(val)
 
     def update_value(self, val):
         self.last_value = float(val)
@@ -382,16 +463,19 @@ class LSLBarApp(QWidget):
         if not self.sound_enabled:
             return
         now = time.monotonic()
-        is_below = val < self.sound_threshold
-        if is_below and not self._below_threshold:
+        is_above = val > self.sound_threshold
+        if is_above and not self._above_threshold:
             if now - self._last_beep_time >= self.BEEP_COOLDOWN:
-                play_beep_async(frequency=520, duration=0.6)
+                play_beep_async(
+                    frequency=self.bowl_frequency,
+                    duration=self.bowl_duration,
+                )
                 self._last_beep_time = now
-        self._below_threshold = is_below
+        self._above_threshold = is_above
 
     def refresh_display(self):
         val = self.last_value
-        is_relaxed = val < self.sound_threshold
+        is_relaxed = val > self.sound_threshold
 
         self.value.setText(f"{val:.2f}")
 

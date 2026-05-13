@@ -1,0 +1,19 @@
+# BCI4ALL Python Ecosystem - Dependências
+# Instala com: pip install -r requirements.txt
+
+# Framework de processamento de sinal
+gpype==3.0.9
+
+# Interface gráfica Qt
+PySide6==6.9.0
+
+# Lab Streaming Layer (comunicação em tempo real)
+pylsl==1.17.6
+
+# Análise numérica (dependência transitiva, incluída para explicitação)
+numpy>=2.0,<3.0
+
+# Ciência e análise de dados (dependências opcionais para análises)
+scipy>=1.0
+matplotlib>=3.0
+pandas>=1.0

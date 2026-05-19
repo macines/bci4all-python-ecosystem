@@ -143,6 +143,84 @@ class SharedEventBuffer:
         self.current_lsl_ts = 0.0
 
 
+class LSLTransportDebugLogger:
+    """
+    Logger CSV opcional para medir o atraso de transporte LSL do stream
+    P300_Events. Activado apenas quando a variável de ambiente
+    DEBUG_P300_LSL_TRANSPORT == "1".
+
+    Regista apenas transições de estado (ON / OFF / CHANGE), não cada
+    amostra recebida — o stream é contínuo a 250 Hz e gerar uma linha
+    por amostra seria contraproducente. As transições são suficientes
+    para caracterizar latência e jitter do transporte.
+
+    Localização do ficheiro:
+        $BCI4ALL_OUTPUT_DIR/p300_lsl_transport_debug.csv  (se definido)
+        ./debug/p300_lsl_transport_debug.csv             (fallback)
+
+    Colunas:
+        session_id, event_index, event_type,
+        code, trigger,
+        sender_lsl_ts, receiver_lsl_ts, transport_delay_ms
+    """
+
+    def __init__(self):
+        # session_id deriva do CSV principal (que já tem timestamp único).
+        # Caso o env var não esteja definido, gera um a partir do tempo actual.
+        output_file = os.environ.get("BCI4ALL_OUTPUT_FILE", "").strip()
+        if output_file:
+            self.session_id = Path(output_file).stem
+        else:
+            self.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        # Pasta de destino: BCI4ALL_OUTPUT_DIR > fallback ./debug.
+        output_dir_env = os.environ.get("BCI4ALL_OUTPUT_DIR", "").strip()
+        if output_dir_env:
+            out_dir = Path(output_dir_env)
+        else:
+            out_dir = Path("debug").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        self.csv_path = out_dir / "p300_lsl_transport_debug.csv"
+        self.event_index = 0
+
+        # Modo "append": preserva histórico se já houver sessões anteriores
+        # neste destino; cabeçalho só é escrito se o ficheiro for novo.
+        write_header = not self.csv_path.exists()
+        self._fh = open(self.csv_path, "a", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._fh)
+        if write_header:
+            self._writer.writerow([
+                "session_id", "event_index", "event_type",
+                "code", "trigger",
+                "sender_lsl_ts", "receiver_lsl_ts", "transport_delay_ms",
+            ])
+            self._fh.flush()
+
+        print(f"[INFO][DEBUG] LSL transport logger ativo -> {self.csv_path}")
+
+    def log_transition(self, event_type, code, trigger, sender_lsl_ts, receiver_lsl_ts):
+        delay_ms = (receiver_lsl_ts - sender_lsl_ts) * 1000.0
+        self.event_index += 1
+        self._writer.writerow([
+            self.session_id,
+            self.event_index,
+            event_type,
+            f"{code:.1f}",
+            f"{trigger:.1f}",
+            f"{sender_lsl_ts:.6f}",
+            f"{receiver_lsl_ts:.6f}",
+            f"{delay_ms:.3f}",
+        ])
+        self._fh.flush()
+
+    def close(self):
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+
 class ContinuousEventListener(threading.Thread):
     """
     Thread que lê o stream contínuo P300_Events.
@@ -175,6 +253,17 @@ class ContinuousEventListener(threading.Thread):
 
         # inlet será preenchido apenas quando o stream for encontrado
         self.inlet = None
+
+        # Debug logger opcional (controlado por DEBUG_P300_LSL_TRANSPORT).
+        # Quando inactivo (default), o comportamento desta classe é exactamente
+        # o mesmo de antes — zero impacto no caminho crítico.
+        self.debug_logger = None
+        if os.environ.get("DEBUG_P300_LSL_TRANSPORT", "") == "1":
+            self.debug_logger = LSLTransportDebugLogger()
+
+        # Estado anterior, usado só para detectar transições no modo debug.
+        self.last_code = 0.0
+        self.last_trigger = 0.0
 
     def stop(self):
         """Sinaliza à thread que deve terminar."""
@@ -220,6 +309,28 @@ class ContinuousEventListener(threading.Thread):
                 code = float(sample[0])
                 trigger = float(sample[1])
 
+                # Logging opcional de transições para CSV de debug.
+                # receiver_lsl_ts é capturado imediatamente após pull_sample()
+                # para reflectir o instante real em que a pipeline processou
+                # a amostra. Activo apenas se DEBUG_P300_LSL_TRANSPORT=1.
+                if self.debug_logger is not None:
+                    receiver_lsl_ts = local_clock()
+                    sender_lsl_ts = float(lsl_ts) if lsl_ts else receiver_lsl_ts
+                    is_zero_now = (code == 0.0 and trigger == 0.0)
+                    was_zero = (self.last_code == 0.0 and self.last_trigger == 0.0)
+                    if was_zero and not is_zero_now:
+                        self.debug_logger.log_transition(
+                            "ON", code, trigger, sender_lsl_ts, receiver_lsl_ts)
+                    elif not was_zero and is_zero_now:
+                        self.debug_logger.log_transition(
+                            "OFF", code, trigger, sender_lsl_ts, receiver_lsl_ts)
+                    elif (not was_zero and not is_zero_now
+                          and (code != self.last_code or trigger != self.last_trigger)):
+                        self.debug_logger.log_transition(
+                            "CHANGE", code, trigger, sender_lsl_ts, receiver_lsl_ts)
+                    self.last_code = code
+                    self.last_trigger = trigger
+
                 # Atualiza o estado partilhado de forma protegida por lock.
                 # lsl_ts é o timestamp LSL real da amostra — usado pelo writer
                 # para garantir que todos os timestamps ficam no mesmo relógio.
@@ -232,6 +343,10 @@ class ContinuousEventListener(threading.Thread):
                 # Em caso de erro, invalida a ligação atual e tenta novamente
                 print(f"[WARN] ContinuousEventListener perdeu ligação: {e}")
                 self.inlet = None
+
+        # Saída do loop principal: fecha o logger de debug se estiver activo.
+        if self.debug_logger is not None:
+            self.debug_logger.close()
 
 
 class CsvWriterWithTimestamp(IONode):

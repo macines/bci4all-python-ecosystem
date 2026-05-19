@@ -7,27 +7,25 @@
 cd /caminho/para/bci4all-python-ecosystem
 ```
 
-### 2. Instala as dependências
-**Opção A — Automático (recomendado):**
-```bash
-python install_dependencies.py
+### 2. Instala as dependências (cria venv automaticamente)
+```powershell
+py -3.10 install_dependencies.py
 ```
 
-**Opção B — Manual com requirements.txt:**
-```bash
+O script cria `./venv` com Python 3.10 e instala lá todas as dependências.
+
+> **Importante:** usa obrigatoriamente Python 3.10 — `gpype 3.0.9` não tem wheels para 3.11+.
+
+**Alternativa manual:**
+```powershell
+py -3.10 -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**Opção C — Instala pacote a pacote:**
-```bash
-pip install gpype==3.0.9
-pip install PySide6==6.9.0
-pip install pylsl==1.17.6
-pip install numpy scipy matplotlib pandas
-```
-
-### 3. Valida a instalação
-```bash
+### 3. Activa o venv e valida a instalação
+```powershell
+venv\Scripts\activate
 python -c "import gpype; import PySide6; from pylsl import StreamInfo; print('OK: Tudo instalado')"
 ```
 
@@ -35,7 +33,7 @@ python -c "import gpype; import PySide6; from pylsl import StreamInfo; print('OK
 
 ## Requisitos
 
-- **Python 3.10+** (testado em 3.10.11 e 3.14)
+- **Python 3.10** (obrigatório — `gpype 3.0.9` não tem wheels para 3.11/3.12/3.14, testado em 3.10.11)
 - **pip** (gestor de pacotes)
 - **Conexão com internet** (para baixar pacotes)
 
@@ -130,20 +128,15 @@ python -c "from pylsl import resolve_byprop; print(resolve_byprop('type', 'Marke
 
 ## Notas para Colega
 
-- **Python:** Usa `python` (não caminhos absolutos) — garante que usa o mesmo ambiente
-- **Virtual Environment:** Recomenda-se criar um venv dedicado
-  ```bash
-  python -m venv venv
-  # Windows
-  venv\Scripts\activate
-  # Linux/Mac
-  source venv/bin/activate
-  
-  pip install -r requirements.txt
+- **Virtual Environment:** O `install_dependencies.py` cria `./venv` automaticamente com Python 3.10. Activa-o sempre antes de correr scripts:
+  ```powershell
+  venv\Scripts\activate     # Windows
+  source venv/bin/activate  # Linux/Mac
   ```
+- **Re-criar o venv:** Se mudares versão de Python ou quiseres ambiente limpo, apaga `venv/` e corre o script outra vez.
 - **Documentação do Código:** Os ficheiros em `parte_5/` têm comentários extensos explicando a arquitectura
 - **Timestamp LSL:** O pipeline usa `local_clock()` como referencial único — sem deriva acumulada
 
 ---
 
-**Última actualização:** 2026-05-13
+**Última actualização:** 2026-05-19

@@ -43,6 +43,11 @@ import sys
 # Usado para obter o caminho do executável Python atual (sys.executable),
 # garantindo que o pipeline filho usa o mesmo ambiente virtual.
 
+import time
+# time: utilitários temporais standard.
+# Usado apenas para time.sleep() na espera por consumidores LSL ligados,
+# evitando que o ciclo de polling consuma 100% de CPU.
+
 from datetime import datetime
 # datetime: representação e manipulação de datas e horas.
 # Usado para gerar o timestamp do nome da pasta/ficheiro de saída
@@ -472,7 +477,20 @@ class LSLControlSender:
         command: string do comando a enviar ("START_CSV" ou "STOP_CSV").
         O timestamp LSL permite ao pipeline registar exatamente quando
         o comando foi enviado, em relação ao sinal EEG.
+
+        Antes de enviar, aguarda até que o pipeline tenha criado o inlet
+        e esteja efectivamente ligado a este outlet. Sem esta espera, o
+        primeiro START_CSV pode ser publicado antes do pipeline conseguir
+        resolver o stream — e perde-se silenciosamente. Timeout 15 s como
+        salvaguarda: se ninguém ligar, envia na mesma e regista aviso.
         """
+        waited = 0.0
+        while not self.control_outlet.have_consumers() and waited < 15.0:
+            time.sleep(0.1)
+            waited += 0.1
+        if not self.control_outlet.have_consumers():
+            print(f"[WARN] {command}: timeout à espera de consumidor — envio na mesma")
+
         ts = local_clock()  # timestamp LSL do momento de envio
         self.control_outlet.push_sample([str(command)], timestamp=ts)
         print(f"[LSL][CONTROL] {command} @ {ts:.6f}")

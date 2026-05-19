@@ -795,8 +795,10 @@ def _build_output_paths(user_id: str):
     - output_dir: Path para a pasta da sessão (criada se não existir)
     - csv_file:   Path completo para o ficheiro CSV esperado
     """
-    # output_dir: pasta outputs/<user_id>/
-    output_dir = Path("outputs") / user_id
+    # output_dir: pasta outputs/<user_id>/ em caminho absoluto.
+    # Resolve() converte para absoluto usando o CWD do controller, garantindo
+    # que o pipeline (com CWD diferente) escreve no mesmo sítio que o controller.
+    output_dir = Path("outputs").resolve() / user_id
 
     # Cria a pasta e todas as intermédias se não existirem.
     # exist_ok=True evita erro se a pasta já existir de uma sessão anterior.

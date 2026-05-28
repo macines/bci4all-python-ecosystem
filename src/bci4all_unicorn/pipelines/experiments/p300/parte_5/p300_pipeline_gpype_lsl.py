@@ -41,6 +41,7 @@ Clock único LSL:
 import csv
 import os
 import threading
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -90,7 +91,7 @@ DEFAULT_CSV_FILE = "p300_full_output_lsl.csv"
 
 # Se True, usa gerador sintético de sinal.
 # Se False, usa o dispositivo real BCICore8.
-USE_GENERATOR = True
+USE_GENERATOR = False
 
 
 def resolve_output_file():
@@ -141,6 +142,13 @@ class SharedEventBuffer:
         self.current_code = 0.0
         self.current_trigger = 0.0
         self.current_lsl_ts = 0.0
+
+        # Fila de transições de eventos para alinhamento por timestamp.
+        # Cada elemento é (sender_lsl_ts, code, trigger). O produtor é o
+        # ContinuousEventListener (empilha quando detecta mudança de estado);
+        # o consumidor é o MergeContinuousEvents (drena a fila a cada bloco
+        # EEG, aplicando cada evento à amostra mais próxima do seu timestamp).
+        self.event_queue = deque()
 
 
 class LSLTransportDebugLogger:
@@ -211,6 +219,89 @@ class LSLTransportDebugLogger:
             f"{sender_lsl_ts:.6f}",
             f"{receiver_lsl_ts:.6f}",
             f"{delay_ms:.3f}",
+        ])
+        self._fh.flush()
+
+    def close(self):
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+
+class LSLEventsTimingLogger:
+    """
+    Logger CSV de timing dos eventos LSL face às amostras EEG.
+
+    Escreve, para cada transição não-zero do stream P300_Events, o
+    timestamp original do estímulo (gerado pelo controller) e o timestamp
+    da amostra EEG onde foi colocado (já com source_delay compensado).
+    A coluna alignment_error_ms dá directamente o atraso entre os dois,
+    permitindo análise dos atrasos sem cálculos adicionais.
+
+    Permanente (não controlado por env var) — produzido em toda a sessão
+    porque é um artefacto pedido para análise pós-experimento.
+
+    Localização do ficheiro:
+        $BCI4ALL_OUTPUT_DIR/p300_events_timing.csv  (se definido)
+        ./debug/p300_events_timing.csv             (fallback)
+
+    Colunas:
+        event_index, event_lsl_ts, block_start, block_end,
+        source_delay_s, applied_sample_idx, sample_lsl_ts,
+        alignment_error_ms, status
+
+    Valores possíveis de status:
+        APPLIED     -> evento colocado numa amostra do bloco corrente
+        DROPPED_OLD -> evento descartado por estar fora da janela + tolerância
+        OFF_SKIPPED -> evento [0,0] in-window não escreve (Ch09/Ch10 ficam zero)
+    """
+
+    def __init__(self):
+        output_dir_env = os.environ.get("BCI4ALL_OUTPUT_DIR", "").strip()
+        if output_dir_env:
+            out_dir = Path(output_dir_env)
+        else:
+            out_dir = Path("debug").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        self.csv_path = out_dir / "p300_events_timing.csv"
+        self.event_index = 0
+
+        # Modo "append": preserva sessões anteriores no mesmo destino.
+        write_header = not self.csv_path.exists()
+        self._fh = open(self.csv_path, "a", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._fh)
+        if write_header:
+            self._writer.writerow([
+                "event_index", "event_lsl_ts", "block_start", "block_end",
+                "source_delay_s", "applied_sample_idx", "sample_lsl_ts",
+                "alignment_error_ms", "status",
+            ])
+            self._fh.flush()
+
+        print(f"[INFO] Events timing logger ativo -> {self.csv_path}")
+
+    def log(self, event_lsl_ts, block_start, block_end, source_delay_s,
+            applied_sample_idx, sample_lsl_ts, status):
+        self.event_index += 1
+        if applied_sample_idx >= 0:
+            alignment_error_ms = (sample_lsl_ts - event_lsl_ts) * 1000.0
+            sample_lsl_ts_str = f"{sample_lsl_ts:.6f}"
+            err_str = f"{alignment_error_ms:.3f}"
+        else:
+            sample_lsl_ts_str = ""
+            err_str = ""
+        self._writer.writerow([
+            self.event_index,
+            f"{event_lsl_ts:.6f}",
+            f"{block_start:.6f}",
+            f"{block_end:.6f}",
+            f"{source_delay_s:.6f}",
+            applied_sample_idx,
+            sample_lsl_ts_str,
+            err_str,
+            status,
         ])
         self._fh.flush()
 
@@ -309,13 +400,21 @@ class ContinuousEventListener(threading.Thread):
                 code = float(sample[0])
                 trigger = float(sample[1])
 
+                # Timestamp LSL de origem desta amostra. Usado tanto para
+                # alinhamento (na fila) como para o logger de debug.
+                sender_lsl_ts = float(lsl_ts) if lsl_ts else local_clock()
+
+                # Detecta mudança de estado relativa à amostra anterior.
+                # Necessário sempre (não só em modo debug) para empilhar
+                # transições na fila de alinhamento.
+                is_transition = (code != self.last_code or trigger != self.last_trigger)
+
                 # Logging opcional de transições para CSV de debug.
                 # receiver_lsl_ts é capturado imediatamente após pull_sample()
                 # para reflectir o instante real em que a pipeline processou
                 # a amostra. Activo apenas se DEBUG_P300_LSL_TRANSPORT=1.
                 if self.debug_logger is not None:
                     receiver_lsl_ts = local_clock()
-                    sender_lsl_ts = float(lsl_ts) if lsl_ts else receiver_lsl_ts
                     is_zero_now = (code == 0.0 and trigger == 0.0)
                     was_zero = (self.last_code == 0.0 and self.last_trigger == 0.0)
                     if was_zero and not is_zero_now:
@@ -324,20 +423,25 @@ class ContinuousEventListener(threading.Thread):
                     elif not was_zero and is_zero_now:
                         self.debug_logger.log_transition(
                             "OFF", code, trigger, sender_lsl_ts, receiver_lsl_ts)
-                    elif (not was_zero and not is_zero_now
-                          and (code != self.last_code or trigger != self.last_trigger)):
+                    elif not was_zero and not is_zero_now and is_transition:
                         self.debug_logger.log_transition(
                             "CHANGE", code, trigger, sender_lsl_ts, receiver_lsl_ts)
-                    self.last_code = code
-                    self.last_trigger = trigger
 
-                # Atualiza o estado partilhado de forma protegida por lock.
-                # lsl_ts é o timestamp LSL real da amostra — usado pelo writer
-                # para garantir que todos os timestamps ficam no mesmo relógio.
+                # Atualiza estado partilhado e empilha transição na fila.
+                # current_* mantém-se para compatibilidade com consumidores
+                # legados. event_queue é o que o MergeContinuousEvents usa
+                # para alinhamento por timestamp à amostra mais próxima.
                 with self.shared_state.lock:
+                    if is_transition:
+                        self.shared_state.event_queue.append(
+                            (sender_lsl_ts, code, trigger))
                     self.shared_state.current_code = code
                     self.shared_state.current_trigger = trigger
-                    self.shared_state.current_lsl_ts = float(lsl_ts) if lsl_ts else local_clock()
+                    self.shared_state.current_lsl_ts = sender_lsl_ts
+
+                # Memoriza último estado recebido (usado por debug e alinhamento).
+                self.last_code = code
+                self.last_trigger = trigger
 
             except Exception as e:
                 # Em caso de erro, invalida a ligação atual e tenta novamente
@@ -379,7 +483,8 @@ class CsvWriterWithTimestamp(IONode):
     - o ficheiro é escrito apenas no final, quando STOP_CSV é recebido.
     """
 
-    def __init__(self, file_name: str, sampling_rate: int, channel_count: int = 10):
+    def __init__(self, file_name: str, sampling_rate: int, channel_count: int = 10,
+                 source_delay_s: float = 0.0):
         super().__init__(target=None)
 
         # file_name -> caminho final do CSV
@@ -390,6 +495,12 @@ class CsvWriterWithTimestamp(IONode):
 
         # channel_count -> número total de canais no sinal final
         self.channel_count = int(channel_count)
+
+        # source_delay_s -> atraso interno da fonte EEG (ex: BCICore8 com
+        # buffer + device delay) em segundos. Subtraído ao local_clock() em
+        # step() para que os timestamps do CSV reflictam o tempo estimado
+        # de aquisição, não o tempo de chegada à pipeline.
+        self.source_delay_s = float(source_delay_s)
 
         # is_recording -> indica se a acumulação de dados está ativa
         self.is_recording = False
@@ -505,8 +616,12 @@ class CsvWriterWithTimestamp(IONode):
 
         n_samples = arr.shape[0]
 
-        # Timestamp LSL do momento de chegada deste bloco
-        t_arrival = local_clock()
+        # Timestamp LSL estimado da última amostra deste bloco.
+        # Subtrai-se source_delay_s para compensar o atraso interno da
+        # fonte (buffer + device): assim t_arrival representa o instante
+        # em que a amostra foi adquirida, não o instante de chegada à
+        # pipeline. Para Generator (delay=0) o comportamento é o mesmo de antes.
+        t_arrival = local_clock() - self.source_delay_s
 
         # Passo temporal entre amostras consecutivas
         dt = 1.0 / self.sampling_rate
@@ -610,7 +725,8 @@ class MergeContinuousEvents(IONode):
     - concatena EEG e eventos num único array.
     """
 
-    def __init__(self, shared_events, eeg_channel_count=EEG_CHANNEL_COUNT):
+    def __init__(self, shared_events, eeg_channel_count=EEG_CHANNEL_COUNT,
+                 source_delay_s: float = 0.0):
         super().__init__(target=None)
 
         # shared_events -> referência ao buffer partilhado dos eventos contínuos
@@ -618,6 +734,18 @@ class MergeContinuousEvents(IONode):
 
         # eeg_channel_count -> número esperado de canais EEG
         self.eeg_channel_count = int(eeg_channel_count)
+
+        # source_delay_s -> atraso interno da fonte EEG (ex: BCICore8) em
+        # segundos. Subtraído ao local_clock() em step() para que a janela
+        # temporal do bloco fique alinhada com os timestamps dos eventos LSL
+        # (que não têm este atraso). Para Generator o valor é 0.0.
+        self.source_delay_s = float(source_delay_s)
+
+        # Logger de timing dos eventos (sempre activo). Produz o
+        # p300_events_timing.csv com o timestamp de cada estímulo, o
+        # timestamp da amostra EEG onde foi colocado, e o erro de
+        # alinhamento já calculado. Artefacto pedido para análise de atrasos.
+        self.alignment_logger = LSLEventsTimingLogger()
 
     def setup(self, data, port_context_in):
         """
@@ -656,13 +784,25 @@ class MergeContinuousEvents(IONode):
 
     def step(self, data):
         """
-        Processa cada bloco EEG recebido.
+        Processa cada bloco EEG recebido com alinhamento por timestamp.
 
-        O procedimento consiste em:
+        Em vez de replicar o último estado [code, trigger] por todas as
+        amostras do bloco (o que introduz desalinhamento porque o evento
+        pode ter começado a meio do bloco), drena a fila de transições
+        do SharedEventBuffer e aplica cada transição não-zero à amostra
+        EEG cujo timestamp LSL estimado é o mais próximo do timestamp
+        de chegada do evento.
+
+        Procedimento:
         1) validar e normalizar o bloco EEG;
-        2) ler o estado mais recente [code, trigger];
-        3) replicar esse estado para todas as amostras do bloco;
-        4) concatenar as colunas de evento ao EEG.
+        2) estimar a janela temporal do bloco em local_clock();
+        3) inicializar Ch09/Ch10 a zero;
+        4) drenar a fila: descartar eventos demasiado antigos, deixar
+           futuros para o próximo bloco, aplicar os in-window;
+        5) marcar cada evento não-zero na amostra mais próxima do seu
+           timestamp (eventos OFF=[0,0] são descartados sem marcar — a
+           coluna fica zero por inicialização);
+        6) concatenar as colunas de evento ao EEG.
         """
         if PORT_IN not in data:
             return None
@@ -673,14 +813,72 @@ class MergeContinuousEvents(IONode):
 
         n_samples = eeg.shape[0]
 
-        # Lê o último estado conhecido do stream de eventos
-        with self.shared_events.lock:
-            code = float(self.shared_events.current_code)
-            trigger = float(self.shared_events.current_trigger)
+        # Janela temporal estimada deste bloco no relógio LSL.
+        # Aproximação: a última amostra corresponde a (local_clock - source_delay)
+        # — ou seja, ao instante real de aquisição, compensando o atraso interno
+        # da fonte EEG. As anteriores são retropoladas em dt = 1/fs.
+        t_block_end = local_clock() - self.source_delay_s
+        dt = 1.0 / SAMPLING_RATE
+        t_block_start = t_block_end - (n_samples - 1) * dt
 
-        # Constrói colunas constantes ao longo do bloco
-        code_col = np.full((n_samples, 1), code, dtype=float)
-        trigger_col = np.full((n_samples, 1), trigger, dtype=float)
+        # Tolerância adicional para não descartar eventos demasiado cedo
+        # durante a validação do alinhamento. Eventos cujo ts caia no intervalo
+        # [t_block_start - TOLERANCE_S, t_block_start] são ainda aplicados
+        # (clamped à amostra 0), evitando perdas por jitter / estimativa imperfeita.
+        TOLERANCE_S = 0.150
+
+        # Colunas de eventos inicializadas a zero. Apenas amostras
+        # correspondentes a transições não-zero serão marcadas.
+        code_col = np.zeros((n_samples, 1), dtype=float)
+        trigger_col = np.zeros((n_samples, 1), dtype=float)
+
+        # Drena a fila de transições:
+        # - eventos com ts < (t_block_start - TOLERANCE_S): demasiado antigos,
+        #   descarta;
+        # - eventos com ts > t_block_end: futuros, ficam para o próximo bloco;
+        # - eventos restantes: pop e marca para aplicar.
+        events_to_apply = []
+        dropped_old = []
+        with self.shared_events.lock:
+            queue = self.shared_events.event_queue
+            while queue:
+                ts, code, trigger = queue[0]
+                if ts < t_block_start - TOLERANCE_S:
+                    queue.popleft()
+                    dropped_old.append((ts, code, trigger))
+                elif ts > t_block_end:
+                    break
+                else:
+                    queue.popleft()
+                    events_to_apply.append((ts, code, trigger))
+
+        # Regista descartados no alignment debug se activo.
+        if self.alignment_logger is not None:
+            for ts, _c, _t in dropped_old:
+                self.alignment_logger.log(
+                    ts, t_block_start, t_block_end, self.source_delay_s,
+                    -1, 0.0, "DROPPED_OLD")
+
+        # Aplica cada evento não-zero à amostra mais próxima do seu timestamp.
+        # Eventos OFF ([0,0]) são silenciosamente ignorados — o vector de
+        # zeros já cobre os períodos sem estímulo.
+        for ts, code, trigger in events_to_apply:
+            if code == 0.0 and trigger == 0.0:
+                if self.alignment_logger is not None:
+                    self.alignment_logger.log(
+                        ts, t_block_start, t_block_end, self.source_delay_s,
+                        -1, 0.0, "OFF_SKIPPED")
+                continue
+            offset = ts - t_block_start
+            sample_idx = int(round(offset / dt))
+            sample_idx = max(0, min(n_samples - 1, sample_idx))
+            sample_lsl_ts = t_block_start + sample_idx * dt
+            code_col[sample_idx, 0] = code
+            trigger_col[sample_idx, 0] = trigger
+            if self.alignment_logger is not None:
+                self.alignment_logger.log(
+                    ts, t_block_start, t_block_end, self.source_delay_s,
+                    sample_idx, sample_lsl_ts, "APPLIED")
 
         # Junta EEG + eventos num único array
         merged = np.hstack((eeg, code_col, trigger_col))
@@ -864,6 +1062,14 @@ def main():
         amp = gp.BCICore8()
         print("[INFO] Fonte EEG: BCICore8")
 
+    # source_delay_s: atraso interno da fonte EEG entre aquisição real e
+    # disponibilização da amostra à pipeline. Para BCICore8 vem do atributo
+    # source_delay (ex: (40 ms buffer + 18 ms device) / 1000 = 0.058 s).
+    # Para Generator o atributo não existe → fallback 0.0. É usado para
+    # alinhar a janela temporal do bloco EEG com os timestamps LSL dos eventos.
+    source_delay_s = float(getattr(amp, "source_delay", 0.0))
+    print(f"[INFO] Source delay: {source_delay_s * 1000.0:.1f} ms")
+
     # Cadeia de filtragem do EEG:
     # 1) bandpass 1-30 Hz
     # 2) notch ~50 Hz
@@ -885,6 +1091,7 @@ def main():
     merge_events = MergeContinuousEvents(
         shared_events=shared_events,
         eeg_channel_count=EEG_CHANNEL_COUNT,
+        source_delay_s=source_delay_s,
     )
 
     # Writer responsável pela gravação final em CSV transposto
@@ -892,6 +1099,7 @@ def main():
         file_name=csv_file,
         sampling_rate=SAMPLING_RATE,
         channel_count=TOTAL_CHANNEL_COUNT,
+        source_delay_s=source_delay_s,
     )
 
     # Listener do stream de controlo START_CSV / STOP_CSV
